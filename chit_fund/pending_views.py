@@ -30,6 +30,17 @@ def _days_between(a, b):
         return None
 
 
+def _weeks_between(a, b):
+    """Full weeks between two dates (integer, floor). Returns None if
+    either date is missing. Post-due-date week counter — used on the
+    Pending sheet per TC_CHITFUND_005 so operators see how many *weeks*
+    a borrower is behind rather than raw days."""
+    d = _days_between(a, b)
+    if d is None or d < 0:
+        return None
+    return d // 7
+
+
 @api_view(["GET"])
 def chit_fund_pending_borrowers(request, chit_id: int):
     """Return active Chit-Fund-Interest borrowers with outstanding principal.
@@ -112,10 +123,25 @@ def chit_fund_pending_borrowers(request, chit_id: int):
                 end = None
 
         last_payment = b.updated_at.date() if b.updated_at else None
+        # TC_CHITFUND_004 — the "Principal Amount" shown in the pending
+        # sheet must equal Principal + Interest (total commitment on the
+        # loan, not just the money that went out). Paid and Balance are
+        # summed the same way so the three columns stay algebraically
+        # consistent (Principal + Interest − Paid = Balance).
+        principal_only = float(b.principal_amt or 0)
+        interest_charged = float(b.intrest_amt or 0)
+        interest_paid = float(b.intrest_paid_amt or 0)
+        principal_paid = float(b.principal_paid or 0)
         principal_balance = float(b.principal_balance or 0)
+        interest_balance = float(b.intrest_balance_amt or 0)
         penalty_balance = float(b.penalty_balance_amt or 0)
         balance_amt = float(b.balance_amt or 0)
-        total_principal += principal_balance
+
+        principal_plus_interest = principal_only + interest_charged
+        paid_plus_interest = principal_paid + interest_paid
+        balance_plus_interest = principal_balance + interest_balance
+
+        total_principal += principal_plus_interest
         total_balance += balance_amt + penalty_balance
 
         borrowers.append({
@@ -128,9 +154,24 @@ def chit_fund_pending_borrowers(request, chit_id: int):
             "end_date": end.isoformat() if end else None,
             "days_from_start": _days_between(start, today),
             "days_from_last_payment": _days_between(last_payment, today),
-            "principal_amt": float(b.principal_amt or 0),
-            "principal_paid": float(b.principal_paid or 0),
-            "principal_balance": principal_balance,
+            # TC_CHITFUND_005 — surface weeks (post-collection counter).
+            # weeks_from_start = raw weeks since the loan began.
+            # weeks_from_last_payment = weeks since the borrower's most
+            # recent payment (i.e., the clock starts only *after* a
+            # collection has happened; before any collection this is
+            # null and the UI renders '-').
+            "weeks_from_start": _weeks_between(start, today),
+            "weeks_from_last_payment": _weeks_between(last_payment, today),
+            # Combined values (Principal + Interest) — what the operator
+            # sees on the Pending sheet per TC_CHITFUND_004.
+            "principal_amt": round(principal_plus_interest, 2),
+            "principal_paid": round(paid_plus_interest, 2),
+            "principal_balance": round(balance_plus_interest, 2),
+            # Raw split still exposed for downstream reports/audit.
+            "principal_only": principal_only,
+            "interest_charged": interest_charged,
+            "interest_paid": interest_paid,
+            "interest_balance": interest_balance,
             "penalty_balance_amt": penalty_balance,
             "balance_amt": balance_amt,
         })
